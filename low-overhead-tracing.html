@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>TODO</title>
+    <meta name="description" content="TODO">
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <main class="container">
+        <nav class="site-nav">
+            <a href="index.html">&larr; All articles</a>
+        </nav>
+
+        <article>
+            <header class="article-header">
+                <h1>TODO</h1>
+                <time datetime="2026-11-20">November 20, 2026</time>
+            </header>
+
+            <div class="article-content">
+                <h1 id="introduction">Introduction</h1>
+                <p>A few days ago, a tweet popped up on my timeline:</p>
+                <figure>
+                <img src="images/tweet.png" alt="Tweet" />
+                <figcaption aria-hidden="true"><a
+                href="https://x.com/fd_ripatel/status/2122653083041980671?s=20">Tweet</a></figcaption>
+                </figure>
+                <p>One of Firedancer’s (a really nice piece of
+                open-source software) main contributors announced that
+                they had built “real-time tracing” directly into the
+                program. The idea and the preview inside the tweet were
+                enough to get me curious and click the link. I was
+                immediately amazed by how rich and well-designed the GUI
+                was, and wished I had a similar tool available for my
+                own engines. I sadly had to get on with my day, but as
+                soon as I got home, I decided to spend some of my free
+                time (and AI tokens) building my own, smaller version of
+                their tracer.</p>
+                <h2 id="whats-tracing">1. What’s tracing?</h2>
+                <p>Thread tracing is about following a thread’s
+                execution to understand what it does, how much time is
+                spent on each step, and collecting additional useful
+                data along the way. It is often mistaken for profiling,
+                but the two are quite different. Profiling generally
+                gives you a statistical overview of where your program
+                spends its time, whereas tracing allows you to follow
+                individual events and reconstruct the execution
+                timeline. It is useful in a wide range of scenarios,
+                such as always-on monitoring (like in Firedancer) or
+                debugging latency artifacts. The major drawback of
+                tracing is its cost. You are facing a trade-off between
+                the granularity and amount of data you extract from the
+                running component and how much slower it becomes once
+                traced. This comes from the additional instructions it
+                must execute, the increased pressure on the memory
+                subsystem and the other various costs associated with
+                extracting and making the data available.</p>
+                <h2 id="why-build-my-own">2. Why build my own?</h2>
+                <p>I’ve spent a lot of time designing and developing
+                tracing solutions at work, but never really got the
+                opportunity to work on an always-on tracer. Moreover,
+                while there are many modern tracing tools available
+                online, I tend to avoid using software I haven’t read or
+                don’t have at least a vague idea of how it works.
+                Second, they are usually quite bloated, slow and/or
+                overengineered, either because of poor design decisions
+                or simply because they are intended to cover a very wide
+                range of use cases.</p>
+                <p><code>magic-trace</code>, for example, is really
+                good, but I wouldn’t recommend using it for always-on
+                tracing for two reasons:</p>
+                <ul>
+                <li><p>It uses Intel PT under the hood to record
+                control-flow information directly at the CPU level.
+                Depending on the configuration and workload, it can
+                generate a substantial amount of data and consume a lot
+                of memory bandwidth, potentially slowing down the entire
+                chip.</p></li>
+                <li><p>You can only inject your own events using manual
+                PTWRITEs, which is fine for one-off investigations but
+                inconvenient for production integration.</p></li>
+                </ul>
+                <p>This is how <code>tracer</code>, my simple tracing
+                tool, came to life. It allows you to trace a single
+                thread on an x86 or aarch64 Linux host with minimal
+                overhead and zero runtime dependencies.</p>
+                <p><strong>Available on GitHub:</strong> <a
+                href="https://github.com/5prairie/tracer">github.com/5prairie/tracer</a></p>
+                <h2 id="what-data-to-dump">3. What data to dump</h2>
+                <p>A <code>tracer</code> event is just 16 bytes and
+                looks like this:</p>
+                <div class="sourceCode" id="cb1"><pre
+                class="sourceCode c"><code class="sourceCode c"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">uint64_t</span> tsc<span class="op">;</span>   <span class="co">/* trace_tsc() when it happened; 0 for a gauge */</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">uint64_t</span> word<span class="op">;</span>  <span class="co">/* kind (4 bits), site (12), value (48) */</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> trace_event_t<span class="op">;</span></span></code></pre></div>
+                <p><code>tsc</code> is simply a snapshot of the
+                processor’s timestamp counter, which can be read with a
+                single hardware instruction.</p>
+                <p><code>kind</code> can be one of four values:</p>
+                <div class="sourceCode" id="cb2"><pre
+                class="sourceCode c"><code class="sourceCode c"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TRACE_KIND_BEGIN      </span><span class="op">(</span><span class="dv">0</span><span class="bu">UL</span><span class="op">)</span><span class="pp">  </span><span class="co">/* a span opens */</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TRACE_KIND_END        </span><span class="op">(</span><span class="dv">1</span><span class="bu">UL</span><span class="op">)</span><span class="pp">  </span><span class="co">/* the span of the same site closes */</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TRACE_KIND_MARK       </span><span class="op">(</span><span class="dv">2</span><span class="bu">UL</span><span class="op">)</span><span class="pp">  </span><span class="co">/* an instant */</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TRACE_KIND_GAUGE      </span><span class="op">(</span><span class="dv">3</span><span class="bu">UL</span><span class="op">)</span><span class="pp">  </span><span class="co">/* a level: value is the level, tsc is 0 */</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TRACE_KIND_COUNTER    </span><span class="op">(</span><span class="dv">4</span><span class="bu">UL</span><span class="op">)</span><span class="pp">  </span><span class="co">/* a hardware counter: site is its index, value its count */</span></span></code></pre></div>
+                <p><code>site</code> is a unique per-tracepoint
+                identifier.</p>
+                <p><code>value</code> is a free payload. It can carry
+                any additional information or context you may want to
+                store for a given site.</p>
+                <p>The event format is lightweight, both in size and in
+                generation/copy cost. The site is generated at compile
+                time, and reading the reference clock is about as cheap
+                as it gets. On modern platforms, it can take around 4–6
+                ns, depending on the architecture and clock frequency.
+                Its reciprocal throughput is generally good meaning
+                repeated timestamp reads aren’t necessarily limited by
+                their individual instruction latency. Note that for both
+                target, the instruction used to read the clock is not
+                serializing, so it can introduce some jitter in the
+                precision of measurements due to out-of-order execution.
+                One improvement I haven’t bothered implementing yet
+                would be to shave off some bits from the TSC and use
+                deltas from the trace start instead of storing the full
+                snapshot in every event.</p>
+                <h2 id="how-do-you-dump">4. How do you dump?</h2>
+                <p><code>tracer</code> records events by copying them
+                into a shared-memory region (ideally backed by a single
+                huge page to reduce TLB pressure and page-walk
+                overhead).</p>
+                <p>An event is recorded using the following
+                function:</p>
+                <div class="sourceCode" id="cb3"><pre
+                class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>TRACE_INLINE <span class="dt">void</span> trace_emit<span class="op">(</span> <span class="dt">uint64_t</span> tsc<span class="op">,</span> <span class="dt">uint64_t</span> word <span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  trace_writer_t <span class="op">*</span> writer <span class="op">=</span> <span class="op">&amp;</span>trace_writer<span class="op">;</span>                                  <span class="co">/* get the thread-local writer */</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">uint64_t</span>         cursor <span class="op">=</span> writer<span class="op">-&gt;</span>cursor<span class="op">;</span>                                 <span class="co">/* read the current head */</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  trace_event_t <span class="op">*</span>  event  <span class="op">=</span> <span class="op">&amp;</span>writer<span class="op">-&gt;</span>event<span class="op">[</span> cursor <span class="op">&amp;</span> writer<span class="op">-&gt;</span>mask <span class="op">];</span>        <span class="co">/* load the event */</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  event<span class="op">-&gt;</span>tsc     <span class="op">=</span> tsc<span class="op">;</span>                                                     <span class="co">/* copy the tsc */</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>  event<span class="op">-&gt;</span>word    <span class="op">=</span> word<span class="op">;</span>                                                    <span class="co">/* copy the data */</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  writer<span class="op">-&gt;</span>cursor <span class="op">=</span> cursor <span class="op">+</span> <span class="dv">1</span><span class="bu">UL</span><span class="op">;</span>                                            <span class="co">/* update the writer&#39;s head */</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  __atomic_store_n<span class="op">(</span> writer<span class="op">-&gt;</span>cursor_shared<span class="op">,</span> cursor <span class="op">+</span> <span class="dv">1</span><span class="bu">UL</span><span class="op">,</span> __ATOMIC_RELEASE <span class="op">);</span><span class="co">/* store the published head */</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+                <p>It’s very simple: only the data we actually need is
+                being moved around. One of the main costs to consider is
+                cache coherency. If other CPUs hold shared copies of a
+                cache line that the writer needs to modify, the
+                coherence protocol must invalidate those copies before
+                the writer can obtain exclusive ownership. This
+                introduces additional latency, which can become
+                particularly expensive when the cache line is shared
+                across sockets. The actual cost depends heavily on the
+                CPU architecture, topology and contention. In this case,
+                the shared publication counter is particularly
+                interesting, as the consumer continuously reads it while
+                the producer updates it. This can generate a fair amount
+                of cache-coherency traffic. It is therefore essential to
+                keep the number of concurrent readers as low as
+                possible. One low-hanging fruit would be to batch
+                updates and publish the new head less frequently,
+                reducing the cache-coherency traffic over the CPU
+                interconnect.</p>
+                <h2 id="how-do-you-collect">5. How do you collect?</h2>
+                <p><code>tracer</code> comes with a <code>tracerd</code>
+                program which continuously collects new events and
+                telemetry data.</p>
+                <h2 id="how-do-you-visualize">6. How do you
+                visualize?</h2>
+                <p>A simple HTTP server and a Web GUI are embedded into
+                <code>tracerd</code>.</p>
+                <figure>
+                <img src="images/gui.png" alt="Demo GUI" />
+                <figcaption aria-hidden="true">Demo GUI</figcaption>
+                </figure>
+                <h2 id="conclusion">Conclusion</h2>
+                <h2 id="credits">Credits</h2>
+                <p>Firedancer’s Web GUI and tracing engine, which
+                heavily inspired this project:</p>
+                <ul>
+                <li><p><a
+                href="https://github.com/firedancer-io/firedancer">Repository</a></p></li>
+                <li><p><a href="https://gui.firedancer.io/replay">Web
+                GUI</a></p></li>
+                </ul>
+            </div>
+        </article>
+
+        <footer class="site-footer">
+            <a href="index.html">Home</a>
+        </footer>
+    </main>
+</body>
+</html>
